@@ -1,0 +1,83 @@
+name: elastic-ad
+services:
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.19.14
+    restart: unless-stopped
+    environment:
+      bootstrap.memory_lock: "true"
+      discovery.type: single-node
+      xpack.security.enabled: "true"
+      xpack.security.autoconfiguration.enabled: "false"
+      xpack.security.http.ssl.enabled: "false"
+      xpack.license.self_generated.type: basic
+      action.destructive_requires_name: "true"
+      ES_JAVA_OPTS: -Xms${ES_HEAP:-2g} -Xmx${ES_HEAP:-2g}
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:?Run bash scripts/init-env.sh}
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes:
+      - elastic_data:/usr/share/elasticsearch/data
+    ports:
+      - "${ES_BIND_IP:-127.0.0.1}:${ES_PORT:-9200}:9200"
+    networks: [elk]
+    healthcheck:
+      test: [CMD-SHELL, 'curl -fsS -u "elastic:$$ELASTIC_PASSWORD" "http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=5s" >/dev/null']
+      interval: 15s
+      timeout: 10s
+      retries: 20
+  kibana-setup:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.19.14
+    restart: "no"
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    environment:
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:?Run bash scripts/init-env.sh}
+      KIBANA_SYSTEM_PASSWORD: ${KIBANA_SYSTEM_PASSWORD:?Run bash scripts/init-env.sh}
+    volumes:
+      - ./scripts/setup-kibana.sh:/setup-kibana.sh:ro
+    entrypoint: [bash, /setup-kibana.sh]
+    networks: [elk]
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.19.14
+    restart: unless-stopped
+    depends_on:
+      kibana-setup:
+        condition: service_completed_successfully
+    environment:
+      KIBANA_SYSTEM_PASSWORD: ${KIBANA_SYSTEM_PASSWORD:?Run bash scripts/init-env.sh}
+      KIBANA_PUBLIC_BASE_URL: ${KIBANA_PUBLIC_BASE_URL:-http://localhost:5601}
+      KIBANA_ENCRYPTION_KEY: ${KIBANA_ENCRYPTION_KEY:?Run bash scripts/init-env.sh}
+      KIBANA_SECURITY_ENCRYPTION_KEY: ${KIBANA_SECURITY_ENCRYPTION_KEY:?Run bash scripts/init-env.sh}
+      KIBANA_REPORTING_ENCRYPTION_KEY: ${KIBANA_REPORTING_ENCRYPTION_KEY:?Run bash scripts/init-env.sh}
+    volumes:
+      - ./config/kibana/kibana.yml:/usr/share/kibana/config/kibana.yml:ro
+    ports:
+      - "${KIBANA_BIND_IP:-127.0.0.1}:${KIBANA_PORT:-5601}:5601"
+    networks: [elk]
+    healthcheck:
+      test: [CMD, /usr/share/kibana/node/bin/node, -e, 'require("http").get("http://127.0.0.1:5601/api/status",r=>{r.resume();process.exit(r.statusCode===200?0:1)}).on("error",()=>process.exit(1))']
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 60s
+  restore:
+    image: docker.elastic.co/kibana/kibana:8.19.14
+    profiles: [restore]
+    user: "0:0"
+    entrypoint: [/usr/share/kibana/node/bin/node, /restore/scripts/restore.mjs]
+    environment:
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:?Run bash scripts/init-env.sh}
+      RESTORE_OVERWRITE: ${RESTORE_OVERWRITE:-0}
+    volumes:
+      - ./scripts/restore.mjs:/restore/scripts/restore.mjs:ro
+      - ./config/elasticsearch:/restore/config/elasticsearch:ro
+      - ./dashboards:/restore/dashboards:ro
+    networks: [elk]
+volumes:
+  elastic_data:
+networks:
+  elk:
+    driver: bridge

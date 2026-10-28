@@ -1,0 +1,152 @@
+{
+  "description": "Pipeline for Security events",
+  "processors": [
+    {
+      "set": {
+        "field": "event.module",
+        "value": "security"
+      }
+    },
+    {
+      "convert": {
+        "type": "string",
+        "ignore_missing": true,
+        "field": "event.code"
+      }
+    },
+    {
+      "pipeline": {
+        "name": "winlogbeat-8.19.14-security_standard",
+        "if": "ctx.winlog?.provider_name != null && [\"Microsoft-Windows-Eventlog\", \"Microsoft-Windows-Security-Auditing\"].contains(ctx.winlog.provider_name)"
+      }
+    },
+    {
+      "gsub": {
+        "field": "source.ip",
+        "pattern": "^\\[?::ffff:([0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+)(?:\\](?::[0-9]+)?)?$",
+        "replacement": "$1",
+        "ignore_missing": true
+      }
+    },
+    {
+      "geoip": {
+        "field": "source.ip",
+        "target_field": "source.geo",
+        "ignore_missing": true
+      }
+    },
+    {
+      "geoip": {
+        "field": "source.ip",
+        "target_field": "source.as",
+        "properties": [
+          "asn",
+          "organization_name"
+        ],
+        "ignore_missing": true,
+        "database_file": "GeoLite2-ASN.mmdb"
+      }
+    },
+    {
+      "rename": {
+        "target_field": "source.as.number",
+        "ignore_missing": true,
+        "field": "source.as.asn"
+      }
+    },
+    {
+      "rename": {
+        "target_field": "source.as.organization.name",
+        "ignore_missing": true,
+        "field": "source.as.organization_name"
+      }
+    },
+    {
+      "append": {
+        "allow_duplicates": false,
+        "if": "ctx.source?.ip != null &&\nctx.source.ip != \"-\"",
+        "field": "related.ip",
+        "value": "{{source.ip}}"
+      }
+    },
+    {
+      "convert": {
+        "field": "winlog.record_id",
+        "type": "string",
+        "ignore_missing": true
+      }
+    },
+    {
+      "convert": {
+        "ignore_missing": true,
+        "field": "winlog.event_id",
+        "type": "string"
+      }
+    },
+    {
+      "set": {
+        "field": "ecs.version",
+        "value": "8.17.0"
+      }
+    },
+    {
+      "set": {
+        "ignore_failure": true,
+        "if": "ctx.winlog?.level != \"\"",
+        "field": "log.level",
+        "copy_from": "winlog.level",
+        "ignore_empty_value": true
+      }
+    },
+    {
+      "date": {
+        "field": "winlog.time_created",
+        "tag": "time_created_date",
+        "formats": [
+          "ISO8601"
+        ],
+        "if": "ctx.winlog?.time_created != null",
+        "on_failure": [
+          {
+            "remove": {
+              "field": "winlog.time_created",
+              "ignore_failure": true
+            }
+          },
+          {
+            "append": {
+              "field": "error.message",
+              "value": "fail-{{{ _ingest.on_failure_processor_tag }}}"
+            }
+          },
+          {
+            "fail": {
+              "message": "Processor {{ _ingest.on_failure_processor_type }} with tag {{ _ingest.on_failure_processor_tag }} in pipeline {{ _ingest.on_failure_pipeline }} failed with message: {{ _ingest.on_failure_message }}"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "convert": {
+        "field": "error.code",
+        "type": "string",
+        "ignore_missing": true
+      }
+    }
+  ],
+  "on_failure": [
+    {
+      "set": {
+        "field": "event.kind",
+        "value": "pipeline_error"
+      }
+    },
+    {
+      "append": {
+        "field": "error.message",
+        "value": "{{ _ingest.on_failure_message }}"
+      }
+    }
+  ]
+}
